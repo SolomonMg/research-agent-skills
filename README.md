@@ -7,6 +7,7 @@ Claude Code skills for academic paper review.
 | `writing_editor.md` | Multi-agent writing editor. Clarity, flow, voice, AI-writing detection. |
 | `statistical-reviewer.md` | Statistical methods review. Assumptions, reporting, causal inference. Optional named-perspective reviewer (Gelman, Pearl, Rubin, Ioannidis, etc.). |
 | `top3-reviewer.md` | Logic, coherence, and contribution review. Argument architecture (Toulmin analysis), framing ("so what?"), and devil's advocate. Pitched at Science/Nature/PNAS standards. |
+| `bibliography-checker.md` | Citation and bibliography audit. Verifies citations exist (via web search), checks characterization faithfulness, finds uncited claims, detects near-paraphrase, identifies missing relevant papers. |
 
 ## Usage
 
