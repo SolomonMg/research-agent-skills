@@ -45,13 +45,26 @@ Parse `$ARGUMENTS` as follows:
 - **Computer science**: `ICML`, `NeurIPS`, `ICWSM`
 (case-insensitive; users can add further journals)
 
+### Recognized fix modes
+
+| Token | Meaning |
+|---|---|
+| `review` | Interactive line-by-line. For each fixable finding, open VS Code at the location (`code -g file:line`), display the issue and proposed fix, and ask the user to approve or skip. Only approved fixes are applied. |
+| `diff` | Apply all auto-fixable changes, then open VS Code for review. If git-tracked, tell user to use Source Control (Cmd+Shift+G) for per-hunk revert. If not, create `.review-backup` and open `code -d backup file`. |
+| `apply` | Apply all auto-fixable changes without opening VS Code. For headless or non-VS-Code environments. |
+
+If no fix mode is found, default to `report` (read-only — no files are modified).
+
 ### Parsing rules
 
-1. If the first token of `$ARGUMENTS` matches a journal name, store it as `TARGET_JOURNAL`. Remaining text is the **file path**.
-2. If no token matches, treat the entire `$ARGUMENTS` as a file path and set `TARGET_JOURNAL` to `Science` (the default standard — broad audience, highest bar for clarity and significance).
-3. If `$ARGUMENTS` is empty, set both to defaults and auto-detect the paper.
+1. Scan tokens of `$ARGUMENTS` left to right.
+2. If a token matches a journal name, store it as `TARGET_JOURNAL`.
+3. If a token matches a fix mode, store it as `FIX_MODE`.
+4. Remaining text is the **file path**.
+5. If no journal token matches, set `TARGET_JOURNAL` to `Science` (the default standard — broad audience, highest bar for clarity and significance). If no fix mode token matches, set `FIX_MODE` to `report`.
+6. If `$ARGUMENTS` is empty, set all to defaults and auto-detect the paper.
 
-Store: `TARGET_JOURNAL`, file path.
+Store: `TARGET_JOURNAL`, `FIX_MODE`, file path.
 
 ---
 
@@ -348,9 +361,69 @@ The files to review are: [LIST ALL FILE PATHS HERE]
 
 ---
 
+## Phase 2b: Fix Mode Gate
+
+*Skip this phase entirely if `FIX_MODE` is `report` (the default). The skill remains read-only and proceeds directly to Phase 3.*
+
+Build a **fix plan** from the agent findings, including only items where a concrete text change can be specified.
+
+**Auto-fixable categories:**
+- Weak or buried topic sentences: rewrite first sentence of a paragraph to state the point directly
+- Vague framing in abstract/introduction: sharpen "this paper studies X" → specific claim
+- Overclaimed contribution: "first to show" → hedged "among the first" or "provides new evidence"
+- Unwarranted generalizations: "this proves" → "this suggests" or "this is consistent with"
+- Missing transitions between sections: add bridging sentence
+- Unclear antecedents: "This shows that..." where "this" is ambiguous → make referent explicit
+- Redundant or circular sentences: cut or condense
+
+**Not auto-fixable (recommend only):**
+- Restructuring the argument architecture (reordering sections, adding new sections)
+- Strengthening a weak warrant (requires new evidence or reasoning)
+- Addressing the devil's advocate objections (requires substantive revision)
+- Changing the framing or positioning of the contribution
+- Adding missing evidence or analyses
+
+For each fixable item, record: file path, line number, current text, proposed replacement, reason, and severity.
+
+Order by severity (CRITICAL first), then group by file.
+
+### If `FIX_MODE` is `review` (interactive line-by-line):
+
+For each item in the fix plan:
+1. Run `code -g FILE:LINE` via Bash to open VS Code at the location.
+2. Display: severity, file and line, current text, proposed fix, and reason.
+3. Use AskUserQuestion: "Apply this fix? (yes / skip / stop)"
+   - **yes** → Apply immediately with Edit tool.
+   - **skip** → Next item.
+   - **stop** → End; skip remaining.
+4. Track applied vs. skipped.
+
+### If `FIX_MODE` is `diff` or `apply`:
+
+Launch a **single fixer agent** (`subagent_type: "general-purpose"`) — the only agent with Edit permissions.
+
+> You are applying reviewed clarity and framing fixes to an academic paper. Each fix has been vetted by review agents. Apply them exactly as specified using the Edit tool. Preserve the author's voice and argument — you are sharpening, not rewriting.
+>
+> **Fix plan:** [insert fix plan]
+>
+> **Rules:**
+> 1. Apply each fix using Edit with the exact `old_string` and `new_string`.
+> 2. If an `old_string` cannot be found, skip it and report as unapplied.
+> 3. Do not make changes beyond the fix plan.
+> 4. Report: number applied, number skipped, list of skipped items with reasons.
+
+After the fixer agent returns:
+- If `FIX_MODE` is `diff` and git-tracked: `code -g FILE:1` for each modified file; tell user to use Source Control for per-hunk revert.
+- If `FIX_MODE` is `diff` and not git-tracked: create backups before fixing, then `code -d BACKUP FILE`.
+- If `FIX_MODE` is `apply`: report changes summary only.
+
+Record results as `FIX_RESULTS`.
+
+---
+
 ## Phase 3: Consolidate and Save
 
-After all 3 agents return, consolidate their findings into a single structured report. Save to:
+After all 3 agents return (and fixes are applied if `FIX_MODE` is not `report`), consolidate their findings into a single structured report. Save to:
 
 `ACADEMIC_REVIEW_[YYYY-MM-DD].md`
 
@@ -424,6 +497,18 @@ objections (Agent 3) > section coherence (Agent 1) > audience calibration (Agent
 
 ---
 
+## Fixes Applied
+
+*Include this section only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit if `FIX_MODE` is `report`.*
+
+| # | File | Fix | Severity | Status |
+|---|---|---|---|---|
+| 1 | ... | Short description | CRITICAL/MAJOR/MINOR | Applied / Skipped / Failed |
+
+**Summary:** X fixes applied, Y skipped, Z failed.
+
+---
+
 ## The Elevator Pitch
 
 If this paper were accepted, the one-sentence finding that would appear in a news
@@ -442,9 +527,11 @@ ordered by severity. Maximum 10 questions.]
 After saving, report to the user:
 1. The path to the saved report
 2. The verdict and contribution rating
-3. The devil's advocate's reject summary (verbatim)
-4. The elevator pitch sentence
-5. The top 5 priority action items
+3. If fixes were applied: how many applied, skipped, and failed
+4. The devil's advocate's reject summary (verbatim)
+5. The elevator pitch sentence
+6. The top 5 remaining priority action items (excluding items already fixed)
+7. If `FIX_MODE` is `diff`: remind the user to review changes in VS Code Source Control
 
 ---
 

@@ -74,16 +74,27 @@ Same journal list as `review-paper-CB`:
 - **Computer Science**: `ICML`, `NeurIPS`, `ICWSM`
 (case-insensitive)
 
+### Recognized fix modes
+
+| Token | Meaning |
+|---|---|
+| `review` | Interactive line-by-line. For each fixable finding, open VS Code at the location (`code -g file:line`), display the issue and proposed fix, and ask the user to approve or skip. Only approved fixes are applied. |
+| `diff` | Apply all auto-fixable changes, then open VS Code for review. If git-tracked, tell user to use Source Control (Cmd+Shift+G) for per-hunk revert. If not, create `.stat-review-backup` and open `code -d backup file`. |
+| `apply` | Apply all auto-fixable changes without opening VS Code. For headless or non-VS-Code environments. |
+
+If no fix mode is found, default to `report` (read-only — no files are modified).
+
 ### Parsing rules
 
 1. Scan tokens of `$ARGUMENTS` left to right.
 2. If a token matches a perspective name (statistician, school, or institution), store it as `PERSPECTIVE`.
 3. If a token matches a journal name, store it as `TARGET_JOURNAL`.
-4. Remaining text is the **file path**.
-5. **Defaults**: If no perspective is specified, set `PERSPECTIVE` to `gelman`. If no journal is specified, set `TARGET_JOURNAL` to `top-field`.
-6. If `$ARGUMENTS` is empty, set all to defaults and auto-detect the paper (see Phase 1).
+4. If a token matches a fix mode, store it as `FIX_MODE`.
+5. Remaining text is the **file path**.
+6. **Defaults**: If no perspective is specified, set `PERSPECTIVE` to `gelman`. If no journal is specified, set `TARGET_JOURNAL` to `top-field`. If no fix mode is specified, set `FIX_MODE` to `report`.
+7. If `$ARGUMENTS` is empty, set all to defaults and auto-detect the paper (see Phase 1).
 
-Store: `PERSPECTIVE`, `TARGET_JOURNAL`, file path.
+Store: `PERSPECTIVE`, `TARGET_JOURNAL`, `FIX_MODE`, file path.
 
 ---
 
@@ -372,9 +383,69 @@ The files to review are: [LIST ALL FILE PATHS HERE]
 
 ---
 
+## Phase 2b: Fix Mode Gate
+
+*Skip this phase entirely if `FIX_MODE` is `report` (the default). The skill remains read-only and proceeds directly to Phase 3.*
+
+Build a **fix plan** from the agent findings, including only items where a concrete text change can be specified.
+
+**Auto-fixable categories:**
+- Overclaimed causal language: "X causes Y" → "X is associated with Y" (when design is correlational)
+- Statistical significance language: "significant effect" used informally → "statistically significant" or "large" as appropriate
+- Missing hedging: assertions without qualification → add "suggestive," "consistent with," or appropriate caveats
+- Notation inconsistencies: same quantity written differently across sections → standardize
+- Numerical inconsistencies: text says "p < 0.01" but table shows "p = 0.03" → fix text to match table
+- Missing reporting elements: add placeholders for missing effect sizes, CIs, or sample sizes (e.g., "[EFFECT SIZE NEEDED]")
+- P-value / test statistic formatting: inconsistent decimal places, missing degrees of freedom → standardize
+
+**Not auto-fixable (recommend only):**
+- Changing the statistical method (wrong test, wrong model specification)
+- Adding power analyses or sensitivity analyses (requires computation)
+- Restructuring the causal identification strategy
+- Adding missing robustness checks
+- Changing the research design or data collection approach
+
+For each fixable item, record: file path, line number, current text, proposed replacement, reason, and severity.
+
+Order by severity (CRITICAL first), then group by file.
+
+### If `FIX_MODE` is `review` (interactive line-by-line):
+
+For each item in the fix plan:
+1. Run `code -g FILE:LINE` via Bash to open VS Code at the location.
+2. Display: severity, file and line, current text, proposed fix, and reason.
+3. Use AskUserQuestion: "Apply this fix? (yes / skip / stop)"
+   - **yes** → Apply immediately with Edit tool.
+   - **skip** → Next item.
+   - **stop** → End; skip remaining.
+4. Track applied vs. skipped.
+
+### If `FIX_MODE` is `diff` or `apply`:
+
+Launch a **single fixer agent** (`subagent_type: "general-purpose"`) — the only agent with Edit permissions.
+
+> You are applying reviewed statistical-language fixes to an academic paper. Each fix has been vetted by statistical review agents. Apply them exactly as specified using the Edit tool. These are language and notation fixes — do not alter the substance of any claim.
+>
+> **Fix plan:** [insert fix plan]
+>
+> **Rules:**
+> 1. Apply each fix using Edit with the exact `old_string` and `new_string`.
+> 2. If an `old_string` cannot be found, skip it and report as unapplied.
+> 3. Do not make changes beyond the fix plan.
+> 4. Report: number applied, number skipped, list of skipped items with reasons.
+
+After the fixer agent returns:
+- If `FIX_MODE` is `diff` and git-tracked: `code -g FILE:1` for each modified file; tell user to use Source Control for per-hunk revert.
+- If `FIX_MODE` is `diff` and not git-tracked: create backups before fixing, then `code -d BACKUP FILE`.
+- If `FIX_MODE` is `apply`: report changes summary only.
+
+Record results as `FIX_RESULTS`.
+
+---
+
 ## Phase 3: Consolidate and Save
 
-After all agents return, consolidate their findings into a single structured report. Save to:
+After all agents return (and fixes are applied if `FIX_MODE` is not `report`), consolidate their findings into a single structured report. Save to:
 
 `STATISTICAL_REVIEW_[YYYY-MM-DD].md`
 
@@ -449,6 +520,18 @@ perspective-specific concerns (Agent 4). Within each agent: Critical > Major > M
 
 ---
 
+## Fixes Applied
+
+*Include this section only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit if `FIX_MODE` is `report`.*
+
+| # | File | Fix | Severity | Status |
+|---|---|---|---|---|
+| 1 | ... | Short description | CRITICAL/MAJOR/MINOR | Applied / Skipped / Failed |
+
+**Summary:** X fixes applied, Y skipped, Z failed.
+
+---
+
 ## Statistical Checklist
 
 | Item | Status | Notes |
@@ -470,9 +553,11 @@ perspective-specific concerns (Agent 4). Within each agent: Critical > Major > M
 After saving, report to the user:
 1. The path to the saved report
 2. The statistical rigor assessment
-3. The top 5 priority action items
-4. The perspective reviewer's primary objection
-5. Counts of issues by severity across all agents
+3. If fixes were applied: how many applied, skipped, and failed
+4. The top 5 remaining priority action items (excluding items already fixed)
+5. The perspective reviewer's primary objection
+6. Counts of issues by severity across all agents
+7. If `FIX_MODE` is `diff`: remind the user to review changes in VS Code Source Control
 
 ---
 

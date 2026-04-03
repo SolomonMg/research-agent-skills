@@ -46,13 +46,26 @@ Parse `$ARGUMENTS` as follows:
 | `bibtex` | BibTeX/BibLaTeX (auto-detect from .bib file) |
 (case-insensitive)
 
+### Recognized fix modes
+
+| Token | Meaning |
+|---|---|
+| `review` | Interactive line-by-line. For each fixable finding, open VS Code at the location (`code -g file:line`), display the issue and proposed fix, and ask the user to approve or skip. Only approved fixes are applied. |
+| `diff` | Apply all auto-fixable changes, then open VS Code for review. If git-tracked, tell user to use Source Control (Cmd+Shift+G) for per-hunk revert. If not, create `.bib-checker-backup` and open `code -d backup file`. |
+| `apply` | Apply all auto-fixable changes without opening VS Code. For headless or non-VS-Code environments. |
+
+If no fix mode is found, default to `report` (read-only — no files are modified).
+
 ### Parsing rules
 
-1. If a token matches a citation style, store it as `CITE_STYLE`. Remaining text is the **file path**.
-2. If no style token is found, set `CITE_STYLE` to `auto` (detect from the document — look for `\bibliography`, `\addbibresource`, `natbib`, `biblatex`, or in-text patterns).
-3. If `$ARGUMENTS` is empty, auto-detect everything.
+1. If a token matches a citation style, store it as `CITE_STYLE`.
+2. If a token matches a fix mode, store it as `FIX_MODE`.
+3. Remaining text is the **file path**.
+4. If no style token is found, set `CITE_STYLE` to `auto` (detect from the document — look for `\bibliography`, `\addbibresource`, `natbib`, `biblatex`, or in-text patterns).
+5. If no fix mode is found, set `FIX_MODE` to `report`.
+6. If `$ARGUMENTS` is empty, auto-detect everything.
 
-Store: `CITE_STYLE`, file path.
+Store: `CITE_STYLE`, `FIX_MODE`, file path.
 
 ---
 
@@ -323,9 +336,67 @@ The paper's core topics are: [FROM PHASE 1 DISCOVERY]
 
 ---
 
+## Phase 2b: Fix Mode Gate
+
+*Skip this phase entirely if `FIX_MODE` is `report` (the default). The skill remains read-only and proceeds directly to Phase 3.*
+
+Build a **fix plan** from the agent findings, including only items where a concrete change can be specified.
+
+**Auto-fixable categories:**
+- BibTeX entry corrections: wrong year, misspelled author names, incorrect DOI, missing fields → edit the `.bib` file
+- Missing BibTeX entries: for citations agents recommend adding → append ready-to-paste entries to `.bib` file
+- Citation key mismatches: `\cite{wrong_key}` where the correct key exists → fix in `.tex` files
+- In-text characterization fixes: "Smith (2020) finds X" where X misrepresents the source → rewrite the in-text characterization
+- Formatting fixes: inconsistent citation formatting, missing periods, wrong brackets → edit `.tex` files
+- Duplicate bibliography entries → remove duplicates from `.bib` file
+
+**Not auto-fixable (recommend only):**
+- Whether to add a new citation to the prose (requires author judgment about where and how to integrate)
+- Near-paraphrase issues (requires rewriting surrounding text)
+- Decisions about which of several candidate citations best supports a claim
+- Removing citations the author chose to include (even if arguably unnecessary)
+
+For each fixable item, record: file path, line number, current text, proposed replacement, reason, and severity.
+
+Order by severity (CRITICAL first), then group by file.
+
+### If `FIX_MODE` is `review` (interactive line-by-line):
+
+For each item in the fix plan:
+1. Run `code -g FILE:LINE` via Bash to open VS Code at the location.
+2. Display: severity, file and line, current text, proposed fix, and reason.
+3. Use AskUserQuestion: "Apply this fix? (yes / skip / stop)"
+   - **yes** → Apply immediately with Edit tool.
+   - **skip** → Next item.
+   - **stop** → End; skip remaining.
+4. Track applied vs. skipped.
+
+### If `FIX_MODE` is `diff` or `apply`:
+
+Launch a **single fixer agent** (`subagent_type: "general-purpose"`) — the only agent with Edit permissions.
+
+> You are applying reviewed bibliography fixes. Each fix has been vetted by three review agents. Apply them exactly as specified using the Edit tool.
+>
+> **Fix plan:** [insert fix plan]
+>
+> **Rules:**
+> 1. Apply each fix using Edit with the exact `old_string` and `new_string`.
+> 2. If an `old_string` cannot be found, skip it and report as unapplied.
+> 3. Do not make changes beyond the fix plan.
+> 4. Report: number applied, number skipped, list of skipped items with reasons.
+
+After the fixer agent returns:
+- If `FIX_MODE` is `diff` and git-tracked: `code -g FILE:1` for each modified file; tell user to use Source Control for per-hunk revert.
+- If `FIX_MODE` is `diff` and not git-tracked: create backups before fixing, then `code -d BACKUP FILE`.
+- If `FIX_MODE` is `apply`: report changes summary only.
+
+Record results as `FIX_RESULTS`.
+
+---
+
 ## Phase 3: Consolidate and Save
 
-After all 3 agents return, consolidate their findings into a single report. Save to:
+After all 3 agents return (and fixes are applied if `FIX_MODE` is not `report`), consolidate their findings into a single report. Save to:
 
 `BIBLIOGRAPHY_CHECK_[YYYY-MM-DD].md`
 
@@ -396,6 +467,18 @@ citations (Agent 3) > formatting issues (Agent 2) > balance concerns (Agent 3).
 
 ---
 
+## Fixes Applied
+
+*Include this section only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit if `FIX_MODE` is `report`.*
+
+| # | File | Fix | Severity | Status |
+|---|---|---|---|---|
+| 1 | ... | Short description | CRITICAL/MAJOR/MINOR | Applied / Skipped / Failed |
+
+**Summary:** X fixes applied, Y skipped, Z failed.
+
+---
+
 ## Quick Reference: Citations to Add
 
 [Consolidated list of all citations the agents recommend adding, with
@@ -414,9 +497,11 @@ the current text and the corrected version.]
 After saving, report to the user:
 1. The path to the saved report
 2. The bibliography health assessment
-3. Count of fabricated/retracted, faithfulness issues, uncited claims, missing citations
-4. The top 5 priority action items
-5. How many ready-to-paste citations are provided in the "Citations to Add" section
+3. If fixes were applied: how many applied, skipped, and failed
+4. Count of fabricated/retracted, faithfulness issues, uncited claims, missing citations
+5. The top 5 remaining priority action items (excluding items already fixed)
+6. How many ready-to-paste citations are provided in the "Citations to Add" section
+7. If `FIX_MODE` is `diff`: remind the user to review changes in VS Code Source Control
 
 ---
 
