@@ -10,6 +10,7 @@ Claude Code skills for academic paper review.
 | `bibliography-checker.md` | Citation and bibliography audit. Verifies citations exist (via web search), checks characterization faithfulness, finds uncited claims, detects near-paraphrase, identifies missing relevant papers. |
 | `review-paper-code.md` | 3-agent research code review. Reproducibility & execution feasibility, data integrity & analytical logic (leakage, merges, magic numbers), paper-to-code mapping & results verification (CODECHECK principle). Domain-aware (econ, polisci, ML, biostats). |
 | `abstract-checker.md` | 2-agent bidirectional abstract checker. Verifies every abstract claim against the body (abstract → body) and checks that the most important findings are highlighted (body → abstract). Flags numerical mismatches, overstatement, missing findings, emphasis misalignment. |
+| `r-refactor.md` | 2-agent R code refactoring for research replication code and visualization. Modernizes tidyverse idioms (dplyr 1.1+), fixes anti-patterns, simplifies pipelines, and reviews ggplot2 for publication readiness, color accessibility, and theme consistency. Optionally runs lintr/styler. |
 
 ## Usage
 
