@@ -8,6 +8,7 @@ Claude Code skills for academic paper review.
 | `statistical-reviewer.md` | Statistical methods review. Assumptions, reporting, causal inference. Optional named-perspective reviewer (Gelman, Pearl, Rubin, Ioannidis, etc.). |
 | `top3-reviewer.md` | Logic, coherence, and contribution review. Argument architecture (Toulmin analysis), framing ("so what?"), and devil's advocate. Pitched at Science/Nature/PNAS standards. |
 | `bibliography-checker.md` | Citation and bibliography audit. Verifies citations exist (via web search), checks characterization faithfulness, finds uncited claims, detects near-paraphrase, identifies missing relevant papers. |
+| `review-paper-code.md` | 3-agent research code review. Reproducibility & execution feasibility, data integrity & analytical logic (leakage, merges, magic numbers), paper-to-code mapping & results verification (CODECHECK principle). Domain-aware (econ, polisci, ML, biostats). |
 
 ## Usage
 
