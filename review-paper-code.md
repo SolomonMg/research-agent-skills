@@ -11,7 +11,7 @@ description: |
   an impact-tiered markdown report. Supports Stata, R, Python, Julia,
   MATLAB, SAS, notebooks, and shell scripts.
 user-invocable: true
-argument-hint: "[path/to/main.tex] [path/to/code_dir] [main|full] [econ|polisci|ml|biostats|general]"
+argument-hint: "[path/to/main.tex] [path/to/code_dir] [main|full] [econ|polisci|ml|biostats|general] [review|diff|apply]"
 allowed-tools:
   - Read
   - Write
@@ -50,13 +50,23 @@ Parse `$ARGUMENTS` left-to-right:
 | `biostats` | Biostatistics / epidemiology: survival analysis, propensity scores, multiple testing, E-values |
 | `general` | General social science (default) |
 
+**Fix mode** (case-insensitive):
+
+| Token | Meaning |
+|---|---|
+| `review` | Interactive line-by-line. For each fixable finding, open VS Code at the location (`code -g file:line`), display the issue and proposed fix, and ask the user to approve or skip. Only approved fixes are applied. |
+| `diff` | Apply all auto-fixable changes, then open VS Code for review. If the file is git-tracked, tell the user to use Source Control (Cmd+Shift+G) for per-hunk revert. If not git-tracked, create a `.code-review-backup` copy first and open `code -d backup file`. |
+| `apply` | Apply all auto-fixable changes without opening VS Code. For headless or non-VS-Code environments. |
+
+If no fix mode token is found, the skill produces a report with recommended fixes but does not modify any code files. This is the default — the skill is read-only unless a fix mode is explicitly requested.
+
 **File path and directory:**
 - If a token looks like a `.tex`, `.qmd`, `.Rmd`, or `.md` path, store it as `PAPER_FILE`.
 - If a token looks like a directory path, store it as `CODE_DIR`.
 
-**Defaults:** If no depth token is found, default to `main`. If no domain token is found, default to `general`.
+**Defaults:** If no depth token is found, default to `main`. If no domain token is found, default to `general`. If no fix mode token is found, default to `report` (read-only, no code changes).
 
-Store resolved values as `PAPER_FILE`, `CODE_DIR`, `REVIEW_DEPTH`, and `DOMAIN`.
+Store resolved values as `PAPER_FILE`, `CODE_DIR`, `REVIEW_DEPTH`, `DOMAIN`, and `FIX_MODE`.
 
 ## Phase 1: Discover the Project
 
@@ -502,6 +512,85 @@ After all 3 agents return, synthesize the results yourself. Do not launch anothe
    - `DISCREPANCY_ITEMS`: paper-code conflicts
    - `OVERALL_ASSESSMENT`: 3-5 sentences, lead with strengths
 
+## Phase 4b: Fix Mode Gate
+
+*Skip this phase entirely if `FIX_MODE` is `report` (the default). The skill remains read-only and proceeds directly to Phase 5.*
+
+Not all findings are auto-fixable. Build a **fix plan** from the synthesized findings, including only items where a concrete code change can be specified:
+
+**Auto-fixable categories:**
+- Hardcoded absolute paths → replace with relative paths
+- Missing random seeds → insert seed-setting calls before stochastic procedures
+- Missing imports → add import statements
+- Missing output directories → add `os.makedirs` / `dir.create` / `mkdir` guards
+- Inconsistent variable names between paper and code → rename to match paper
+- Missing merge diagnostics → add assertion or logging after merge
+- Missing dependency files → generate `requirements.txt` from imports, or `renv::init()`
+- Missing or incomplete README sections → draft reproducibility documentation
+
+**Not auto-fixable (recommend only):**
+- Statistical method changes (wrong test, wrong clustering level)
+- Data leakage restructuring (moving preprocessing after split)
+- Sample restriction discrepancies between paper and code
+- Missing robustness checks (these require domain judgment to implement)
+- Analytical logic concerns (magic numbers, outlier treatment choices)
+
+For each fixable item, record:
+- File path and line number
+- The current code (exact text to replace)
+- The proposed replacement
+- Why the change is being made
+- Severity tier (CRITICAL / MAJOR / MINOR)
+
+Order the fix plan by severity (CRITICAL first), then by file (group changes to the same file together).
+
+### If `FIX_MODE` is `review` (interactive line-by-line):
+
+Do **not** launch the fixer agent. Instead, for each item in the fix plan:
+
+1. Run `code -g FILE:LINE` via Bash to open VS Code at the location.
+2. Display in the terminal: the severity, file and line, the current code, the proposed fix, and the reason.
+3. Use AskUserQuestion: "Apply this fix? (yes / skip / stop)"
+   - **yes** — Apply the fix immediately using the Edit tool.
+   - **skip** — Move to the next item.
+   - **stop** — End the review; skip all remaining fixes.
+4. Track which fixes were applied and which were skipped.
+
+### If `FIX_MODE` is `diff` or `apply`:
+
+Launch a **single fixer agent** with `subagent_type: "general-purpose"`. This is the **only agent with Edit permissions**.
+
+Pass to the fixer agent:
+- The complete fix plan
+- The list of files to modify
+
+**Fixer agent prompt:**
+
+> You are applying a set of reviewed code fixes to a research project. Each fix has been vetted by three review agents and a synthesis step. Apply them exactly as specified.
+>
+> **Fix plan:** [insert fix plan]
+>
+> **Rules:**
+> 1. Apply each fix using the Edit tool with the exact `old_string` and `new_string` from the fix plan.
+> 2. If an `old_string` cannot be found (the code may have shifted), skip it and report it as unapplied.
+> 3. Do not make any changes beyond what the fix plan specifies. Do not refactor, improve style, or add features.
+> 4. After all fixes, report: number applied, number skipped, and the list of skipped items with reasons.
+>
+> **Files to modify:** [insert file list]
+
+After the fixer agent returns:
+
+- If `FIX_MODE` is `diff` and the file is **git-tracked**: run `code -g FILE:1` for each modified file and tell the user:
+  "Open Source Control (Cmd+Shift+G) and click the changed file to see a side-by-side diff. Use the ↩ gutter buttons to revert any individual hunk."
+
+- If `FIX_MODE` is `diff` and the file is **not git-tracked**: before launching the fixer agent, create backups (`cp FILE FILE.code-review-backup`). After fixes are applied, run `code -d FILE.code-review-backup FILE` for each modified file. Tell the user to delete backups when satisfied.
+
+- If `FIX_MODE` is `apply`: no VS Code interaction. Report the changes summary.
+
+Record which fixes were applied and which were skipped as `FIX_RESULTS`.
+
+---
+
 ## Phase 5: Write the Report
 
 Write the report to the current working directory as:
@@ -610,9 +699,25 @@ Use this structure:
 
 ---
 
+## Fixes Applied
+
+*Include this section only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit entirely if `FIX_MODE` is `report`.*
+
+| # | File | Line | Fix | Severity | Status |
+|---|---|---|---|---|---|
+| 1 | ... | ... | Short description | CRITICAL/MAJOR/MINOR | Applied / Skipped / Failed |
+
+**Summary:** X fixes applied, Y skipped, Z failed.
+
+[If any fixes were skipped or failed, list them with reasons.]
+
+---
+
 ## Priority Action Items
 
 Triage hierarchy: data integrity failures > execution blockers > paper-code discrepancies on main results > reproducibility gaps > analytical concerns on secondary results > hardcoded number risks > missing robustness code > code quality.
+
+*If fixes were applied, mark fixed items as "DONE" and focus the action list on remaining items.*
 
 **CRITICAL** (must address — blocks reproducibility or may invalidate main claims):
 1. ...
@@ -646,6 +751,8 @@ After writing the report, tell the user:
 - That the code review is complete
 - The path to the saved report
 - The `Overall Assessment` (3-5 sentences)
-- The top 5 priority action items
-- Counts: how many CRITICAL, MAJOR, and MINOR items were found
+- If fixes were applied: how many applied, skipped, and failed
+- The top 5 remaining priority action items (excluding items already fixed)
+- Counts: how many CRITICAL, MAJOR, and MINOR items were found (and how many were auto-fixed)
 - Any caveats about review coverage (files not reviewed, languages not fully covered, etc.)
+- If `FIX_MODE` is `diff`: remind the user to review changes in VS Code Source Control
