@@ -2,18 +2,21 @@
 name: replication-archive
 version: 1.0.0
 description: |
-  3-agent replication package auditor and README generator. Agent A checks
-  archive structure and documentation (README completeness against the SSDE
-  template, folder layout, LICENSE, data availability statements). Agent B
-  audits code reproducibility (master script, path management, dependency
-  pinning, random seeds, batch mode, data pipeline integrity). Agent C
-  verifies paper-archive alignment (table-to-script mapping, figure mapping,
-  inline number tracing, appendix coverage). Produces a Completeness
-  Dashboard and prioritized checklist. Fix modes generate missing
-  documentation (README, LICENSE, table mapping, config file) rather than
-  just flagging gaps. Supports AEA, AJPS, Nature, and general standards.
+  3-agent replication package auditor, README generator, and archive builder.
+  Agent A checks archive structure and documentation (README completeness
+  against the SSDE template, folder layout, LICENSE, data availability
+  statements). Agent B audits code reproducibility (master script, path
+  management, dependency pinning, random seeds, batch mode, data pipeline
+  integrity). Agent C verifies paper-archive alignment (table-to-script
+  mapping, figure mapping, inline number tracing, appendix coverage).
+  Produces a Completeness Dashboard and prioritized checklist. Fix modes
+  generate missing documentation (README, LICENSE, table mapping, config
+  file). Build mode constructs a complete replication package from a
+  project directory — organizing files into standard folder structure,
+  generating a master script, and creating all documentation.
+  Supports AEA, AJPS, Nature, and general standards.
 user-invocable: true
-argument-hint: "[path/to/archive] [path/to/paper.tex] [aea|ajps|nature|general] [report|review|diff|apply]"
+argument-hint: "[path/to/archive] [path/to/paper.tex] [aea|ajps|nature|general] [report|review|diff|apply|build]"
 allowed-tools:
   - Read
   - Write
@@ -27,7 +30,7 @@ allowed-tools:
 
 # Replication Archive
 
-Audit a replication package against journal standards and generate missing documentation. Three read-only agents examine the archive in parallel; an optional fixer agent generates README, LICENSE, table mappings, and config files. Every finding is framed as what a human replicator would experience: "A replicator running this archive would encounter X because Y."
+Audit a replication package against journal standards, generate missing documentation, or build a complete replication archive from a project directory. Three read-only agents examine the project in parallel; an optional fixer agent generates README, LICENSE, table mappings, and config files. In `build` mode, the skill constructs the entire archive: folder structure, master script, config file, and all documentation. Every finding is framed as what a human replicator would experience: "A replicator running this archive would encounter X because Y."
 
 **What this skill does NOT cover** (use companion skills instead):
 - Statistical methods and analytical correctness → `review-paper-code` or `statistical-reviewer`
@@ -58,6 +61,7 @@ Parse `$ARGUMENTS` left-to-right:
 | `review` | Interactive item-by-item. For each generated file or fixable finding, display the content and ask the user to approve or skip. |
 | `diff` | Generate all documentation and apply all fixes, then open VS Code for review. Git-tracked: Source Control. Not git-tracked: create `.replication-backup` copies and open `code -d backup file`. |
 | `apply` | Generate all documentation and apply all fixes without opening VS Code. Headless. |
+| `build` | **Construct a complete replication archive** from the project directory. Creates a new `replication-package/` directory with standard folder structure, copies code and data files into the correct locations, generates a master script, config file, README, and LICENSE. Runs the full audit afterward and reports remaining gaps. |
 
 If no fix mode token is found, default to `report` (read-only — no files created or modified).
 
@@ -848,6 +852,377 @@ Record results as `FIX_RESULTS`.
 
 ---
 
+## Phase 4c: Build Mode
+
+*Skip this phase entirely unless `FIX_MODE` is `build`. If `FIX_MODE` is `build`, skip Phase 4b entirely and execute this phase instead.*
+
+Build mode constructs a deposit-ready replication archive from the project directory. It uses the agent findings to make intelligent decisions about file placement, script ordering, and documentation content. The output is a self-contained `replication-package/` directory that a replicator can download and run.
+
+### Step 1: Confirm with user
+
+Before building, use AskUserQuestion to confirm:
+
+> I will create a replication archive at `ARCHIVE_DIR/replication-package/` with this structure:
+>
+> ```
+> replication-package/
+> ├── README.md
+> ├── LICENSE
+> ├── code/
+> │   ├── config.[ext]
+> │   ├── master.[ext]
+> │   └── [all code files]
+> ├── data/
+> │   ├── raw/       [X files]
+> │   └── analysis/  [Y files]
+> └── results/
+>     ├── tables/
+>     └── figures/
+> ```
+>
+> **Code files:** [list]
+> **Data files (raw):** [list — note any restricted data that will NOT be copied]
+> **Data files (analysis):** [list]
+> **Output directory:** results/ (will be empty — code regenerates these)
+>
+> Proceed? (yes / no)
+
+If the user says no, fall back to `report` mode.
+
+### Step 2: Create folder structure
+
+Create the target directory tree using Bash `mkdir -p`:
+
+```
+replication-package/
+├── code/
+├── data/
+│   ├── raw/
+│   └── analysis/
+└── results/
+    ├── tables/
+    └── figures/
+```
+
+If `STANDARD = aea`, use exactly `data/raw/`, `data/analysis/`, `code/`, `results/`. For other standards, use the same layout (it is the clearest convention regardless of journal).
+
+### Step 3: Copy files
+
+Use Bash `cp` to copy files into the archive. **Never move or delete originals.**
+
+**Code files:**
+- Copy all files from `CODE_FILES` into `replication-package/code/`.
+- Preserve any subdirectory structure within the code directory (e.g., if the project has `code/cleaning/` and `code/analysis/`, replicate that structure under `replication-package/code/`).
+- Exclude: `.git/`, `__pycache__/`, `.Rhistory`, `.DS_Store`, `*.pyc`, `renv/library/`, `.venv/`, `node_modules/`.
+
+**Data files:**
+- Copy files from `DATA_RAW` into `replication-package/data/raw/`.
+- Copy files from `DATA_ANALYSIS` into `replication-package/data/analysis/`.
+- For files in `DATA_OTHER` (ambiguous location): use Agent B's data pipeline map to classify. If a file is read by the first script in the pipeline, it is raw. If it is produced by one script and consumed by another, it is analysis/intermediate. If unclear, place in `data/raw/` and flag for the author.
+- **Do NOT copy** files that Agent A identified as restricted or confidential. Instead, create a placeholder file `replication-package/data/raw/RESTRICTED_[filename].txt` containing: "This file is not included due to access restrictions. See README §2 (Data Availability) for instructions on obtaining this data."
+
+**Dependency files:**
+- Copy `requirements.txt`, `renv.lock`, `environment.yml`, `DESCRIPTION`, `Project.toml`, `Manifest.toml`, or equivalent into `replication-package/code/`.
+
+**Do NOT copy output files** into `results/`. The results directory should be empty — a valid replication archive regenerates all outputs from code + data. (Exception: if Agent B determined that certain outputs cannot be regenerated because the code is incomplete, copy them and flag in the report.)
+
+### Step 4: Generate config file
+
+Create a config file at `replication-package/code/config.[ext]` (where `[ext]` matches the primary language):
+
+**Stata** (`config.do`):
+```stata
+* =============================================================================
+* Configuration — SET THIS PATH BEFORE RUNNING
+* =============================================================================
+* Set `root` to the full path of the replication-package/ directory.
+* Example: global root "/Users/yourname/replication-package"
+
+global root "TO BE SET BY AUTHOR"
+
+* Derived paths (do not edit)
+global code    "$root/code"
+global data    "$root/data"
+global raw     "$root/data/raw"
+global analysis "$root/data/analysis"
+global results "$root/results"
+global tables  "$root/results/tables"
+global figures "$root/results/figures"
+```
+
+**R** (`config.R`):
+```r
+# ==============================================================================
+# Configuration — SET THIS PATH BEFORE RUNNING
+# ==============================================================================
+# Set `root` to the full path of the replication-package/ directory.
+# Example: root <- "/Users/yourname/replication-package"
+
+root <- "TO BE SET BY AUTHOR"
+
+# Derived paths (do not edit)
+code_dir    <- file.path(root, "code")
+data_dir    <- file.path(root, "data")
+raw_dir     <- file.path(root, "data", "raw")
+analysis_dir <- file.path(root, "data", "analysis")
+results_dir <- file.path(root, "results")
+tables_dir  <- file.path(root, "results", "tables")
+figures_dir <- file.path(root, "results", "figures")
+```
+
+**Python** (`config.py`):
+```python
+# ==============================================================================
+# Configuration — SET THIS PATH BEFORE RUNNING
+# ==============================================================================
+# Set `ROOT` to the full path of the replication-package/ directory.
+# Example: ROOT = "/Users/yourname/replication-package"
+
+from pathlib import Path
+
+ROOT = Path("TO BE SET BY AUTHOR")
+
+# Derived paths (do not edit)
+CODE_DIR    = ROOT / "code"
+DATA_DIR    = ROOT / "data"
+RAW_DIR     = ROOT / "data" / "raw"
+ANALYSIS_DIR = ROOT / "data" / "analysis"
+RESULTS_DIR = ROOT / "results"
+TABLES_DIR  = ROOT / "results" / "tables"
+FIGURES_DIR = ROOT / "results" / "figures"
+```
+
+For multi-language projects, generate config files for each language.
+
+### Step 5: Generate master script
+
+Create a master script at `replication-package/code/master.[ext]` that runs all code files in the correct order. Use Agent B's data pipeline map and execution walkthrough to determine the ordering.
+
+**Stata** (`master.do`):
+```stata
+* =============================================================================
+* Master script — runs all code to replicate paper results
+* =============================================================================
+* Runtime: TO BE FILLED BY AUTHOR
+* Last verified: TO BE FILLED BY AUTHOR
+* =============================================================================
+
+clear all
+set more off
+set maxvar 10000
+
+* Load configuration
+do "$root/code/config.do"
+
+* Create output directories
+cap mkdir "$results"
+cap mkdir "$tables"
+cap mkdir "$figures"
+
+* --- Data cleaning ---
+do "$code/[first_script].do"
+do "$code/[second_script].do"
+
+* --- Analysis ---
+do "$code/[analysis_script].do"
+
+* --- Tables and figures ---
+do "$code/[output_script].do"
+
+* =============================================================================
+* Done. Check results/ for output files.
+* =============================================================================
+```
+
+**R** (`master.R`):
+```r
+# ==============================================================================
+# Master script — runs all code to replicate paper results
+# ==============================================================================
+# Runtime: TO BE FILLED BY AUTHOR
+# Last verified: TO BE FILLED BY AUTHOR
+# ==============================================================================
+
+rm(list = ls())
+
+# Load configuration
+source("code/config.R")
+
+# Create output directories
+dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+
+# --- Data cleaning ---
+source(file.path(code_dir, "[first_script].R"))
+source(file.path(code_dir, "[second_script].R"))
+
+# --- Analysis ---
+source(file.path(code_dir, "[analysis_script].R"))
+
+# --- Tables and figures ---
+source(file.path(code_dir, "[output_script].R"))
+
+# ==============================================================================
+# Done. Check results/ for output files.
+# ==============================================================================
+```
+
+**Python** (`master.py`):
+```python
+#!/usr/bin/env python3
+"""
+Master script — runs all code to replicate paper results.
+Runtime: TO BE FILLED BY AUTHOR
+Last verified: TO BE FILLED BY AUTHOR
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+code_dir = Path(__file__).parent
+
+scripts = [
+    # --- Data cleaning ---
+    "[first_script].py",
+    "[second_script].py",
+    # --- Analysis ---
+    "[analysis_script].py",
+    # --- Tables and figures ---
+    "[output_script].py",
+]
+
+for script in scripts:
+    print(f"\n{'='*60}")
+    print(f"Running: {script}")
+    print(f"{'='*60}\n")
+    result = subprocess.run(
+        [sys.executable, str(code_dir / script)],
+        check=True,
+    )
+
+print("\nDone. Check results/ for output files.")
+```
+
+**Ordering logic:**
+1. Use Agent B's data pipeline map: scripts that produce inputs for other scripts run first.
+2. Within a dependency tier, use filename numbering if present (`01_`, `02_`).
+3. Group by function: data cleaning → analysis → output generation.
+4. Add comments marking each group.
+5. If the ordering is uncertain, add a `# TODO: verify ordering` comment and flag in the report.
+
+For **multi-language projects** (e.g., Stata for data cleaning, R for analysis), generate a shell script (`master.sh`) or Makefile that calls each language's scripts in order.
+
+**Makefile** (for multi-language projects):
+```makefile
+# Master Makefile — runs all code to replicate paper results
+# Runtime: TO BE FILLED BY AUTHOR
+
+.PHONY: all clean
+
+all: data_cleaning analysis tables_figures
+
+data_cleaning:
+	cd code && stata-mp -b do clean_data.do
+
+analysis:
+	cd code && Rscript analysis.R
+
+tables_figures:
+	cd code && Rscript make_tables.R
+	cd code && Rscript make_figures.R
+
+clean:
+	rm -rf results/tables/* results/figures/*
+```
+
+### Step 6: Update paths in copied code
+
+Launch a **fixer agent** (`subagent_type: "general-purpose"`) to update paths in the copied code files. This agent has Edit permissions on files in `replication-package/` only.
+
+> You are updating file paths in code that has been copied into a replication archive. The archive has this structure:
+>
+> ```
+> replication-package/
+> ├── code/        (all scripts are here)
+> ├── data/raw/    (raw data)
+> ├── data/analysis/ (processed data)
+> └── results/     (output: tables/, figures/)
+> ```
+>
+> A config file at `code/config.[ext]` defines: `root`, `code`, `data`, `raw`, `analysis`, `results`, `tables`, `figures`.
+>
+> **Task:** For each code file in `replication-package/code/`:
+> 1. Replace every hardcoded absolute path with the corresponding config variable.
+> 2. Replace every relative path that assumes a different directory structure with the config variable equivalent.
+> 3. Add `source("code/config.R")` / `do "$root/code/config.do"` / `from config import *` at the top of each script if not already present.
+> 4. Ensure output paths point to `results/tables/` or `results/figures/`.
+> 5. Ensure data input paths point to `data/raw/` or `data/analysis/`.
+>
+> **Rules:**
+> - Only modify files inside `replication-package/`.
+> - Do not change analysis logic, variable names, or statistical methods.
+> - If a path is ambiguous, leave it and add a comment: `/* TODO: verify this path */`.
+> - Report every change made: file, line, old path, new path.
+>
+> **Hardcoded paths found by the audit:** [insert Agent B's hardcoded paths list]
+> **Data pipeline map:** [insert Agent B's pipeline map]
+
+### Step 7: Generate documentation
+
+Generate the following files in `replication-package/`:
+
+1. **README.md** — Use the same SSDE template from Phase 4b's auto-fixable category #1, but with the following improvements for build mode:
+   - The Instructions to Replicators section references the generated `master.[ext]` and `config.[ext]` by name.
+   - The Description of Programs section lists all files actually copied into `code/`.
+   - The List of Tables and Programs section uses Agent C's mapping.
+   - Data Availability Statements include placeholder entries for restricted data with the text from the placeholder files.
+
+2. **LICENSE** — Same as Phase 4b's auto-fixable category #2.
+
+3. **MANIFEST.md** — A file listing every file in the archive with its purpose:
+   ```markdown
+   # Archive Manifest
+
+   ## code/
+   - `master.do` — Master script. Runs all other scripts.
+   - `config.do` — Configuration. Set root path here.
+   - `01_clean_data.do` — Cleans raw survey data.
+   - ...
+
+   ## data/raw/
+   - `survey_2020.dta` — Raw survey responses (N = 15,234).
+   - `RESTRICTED_admin_records.txt` — Placeholder. See README §2.
+   - ...
+
+   ## data/analysis/
+   - `analysis_sample.dta` — Cleaned analysis sample. Produced by 01_clean_data.do.
+   - ...
+
+   ## results/
+   Empty. Populated by running master.do.
+   ```
+
+### Step 8: Run post-build audit
+
+After building, re-run the audit mentally against the new archive. Check:
+- Does the master script reference all code files in the correct order?
+- Do all paths in the copied code resolve to files that exist in the archive?
+- Are all data files referenced by code either present or documented as restricted?
+- Does the README's table mapping match what Agent C found?
+
+Record any remaining gaps as `BUILD_REMAINING_ISSUES`.
+
+### Step 9: Report build results
+
+Record as `BUILD_RESULTS`:
+- Archive location: `ARCHIVE_DIR/replication-package/`
+- Files copied: X code files, Y data files (Z restricted data placeholders created)
+- Files generated: README.md, LICENSE, config.[ext], master.[ext], MANIFEST.md
+- Path updates: X paths updated in Y files
+- Remaining issues: [from Step 8]
+
+---
+
 ## Phase 5: Write the Report
 
 Save to: `replication_archive_[YYYY-MM-DD].md`
@@ -905,9 +1280,34 @@ tables, and Coverage Summary.]
 
 ---
 
+## Build Summary
+
+*Include only if `FIX_MODE` is `build`. Omit otherwise.*
+
+**Archive location:** `replication-package/`
+
+| Category | Count | Details |
+|---|---|---|
+| Code files copied | X | [list] |
+| Raw data files copied | X | [list] |
+| Analysis data files copied | X | [list] |
+| Restricted data placeholders | X | [list — data not included, see README §2] |
+| Files generated | X | README.md, LICENSE, config.[ext], master.[ext], MANIFEST.md |
+| Paths updated in code | X across Y files | |
+| Remaining issues | X | [list — things the author must still do] |
+
+**Next steps for the author:**
+1. Search for "TO BE FILLED BY AUTHOR" in README.md and fill in all fields.
+2. Search for "TO BE SET BY AUTHOR" in config.[ext] and set the root path.
+3. Search for "TODO" in code files for any paths or orderings that need verification.
+4. Run the master script in a clean environment to verify end-to-end execution.
+5. [Any remaining issues from the post-build audit.]
+
+---
+
 ## Fixes Applied
 
-*Include only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit if `report`.*
+*Include only if `FIX_MODE` is `review`, `diff`, or `apply`. Omit if `report` or `build`.*
 
 | # | Type | File | Description | Severity | Status |
 |---|---|---|---|---|---|
@@ -969,12 +1369,15 @@ After saving the report, tell the user:
 1. **Report path** — where the report was saved
 2. **Archive health** — one sentence
 3. **Completeness dashboard** — the key metrics table
-4. **Fixes** (if fix mode active): what was generated (README, LICENSE, config), how many edits applied. Remind to search for "TO BE FILLED BY AUTHOR" in generated files.
+4. **Fixes / build results**:
+   - If `build`: report archive location, files copied, files generated, paths updated. Remind to search for "TO BE FILLED BY AUTHOR" and "TO BE SET BY AUTHOR". Recommend running the master script in a clean environment.
+   - If `review`/`diff`/`apply`: what was generated (README, LICENSE, config), how many edits applied. Remind to search for "TO BE FILLED BY AUTHOR" in generated files.
 5. **Top 5 priority action items** — from the CRITICAL and MAJOR tiers
 6. **Counts**: X CRITICAL, Y MAJOR, Z MINOR findings
 7. **Standard-specific note**: e.g., "AEA requires a clean-environment test — run your archive on a fresh machine before submitting" or "Nature requires a DOI for the code deposit — create a Zenodo release from the GitHub repo"
 8. If `FIX_MODE` is `diff`: remind user to review changes in VS Code Source Control
 9. If `FIX_MODE` is `report`: note that a recommended README is in the report appendix
+10. If `FIX_MODE` is `build`: remind user that `results/` is intentionally empty — it gets populated when the master script runs
 
 ---
 
@@ -982,19 +1385,25 @@ After saving the report, tell the user:
 
 ```
 # Audit against general SSDE standards (default)
-/replication-archive path/to/archive path/to/paper.tex
+/replication-archive path/to/project path/to/paper.tex
 
 # Audit against AEA standards
-/replication-archive aea path/to/archive path/to/paper.tex
+/replication-archive aea path/to/project path/to/paper.tex
 
-# Audit and generate missing documentation
-/replication-archive aea apply path/to/archive path/to/paper.tex
+# Audit and generate missing documentation in place
+/replication-archive aea apply path/to/project path/to/paper.tex
 
 # Interactive review of generated documentation
-/replication-archive ajps review path/to/archive
+/replication-archive ajps review path/to/project
+
+# Build a complete replication archive from a project directory
+/replication-archive build path/to/project path/to/paper.tex
+
+# Build for AEA submission
+/replication-archive aea build path/to/project path/to/paper.tex
 
 # Audit for Nature submission
-/replication-archive nature path/to/archive path/to/paper.tex
+/replication-archive nature path/to/project path/to/paper.tex
 ```
 
 ---
